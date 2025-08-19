@@ -1,0 +1,159 @@
+version: "3.8"
+
+services:
+  catalog:
+    image: projectnessie/nessie
+    container_name: catalog
+    networks:
+      - data-lake-network
+    ports:
+      - 19120:19120
+
+  trino:
+    image: trinodb/trino
+    container_name: trino
+    networks:
+      - data-lake-network
+    ports:
+      - 8083:8080
+    volumes:
+      - "./trino/conector/iceberg.properties:/etc/trino/catalog/iceberg.properties"
+      - "./trino/coordinator/coordinator.properties:/etc/trino/config.properties"
+
+  trino-worker:
+    image: trinodb/trino
+    networks:
+      - data-lake-network
+    volumes:
+      - "./trino/conector/iceberg.properties:/etc/trino/catalog/iceberg.properties"
+      - "./trino/worker/worker.properties:/etc/trino/config.properties"
+
+  storage:
+    image: minio/minio:RELEASE.2024-06-11T03-13-30Z
+    container_name: storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_DOMAIN: storage
+      MINIO_REGION_NAME: us-east-1
+      MINIO_REGION: us-east-1
+    networks:
+      - data-lake-network
+    ports:
+      - 9000:9000
+      - 9001:9001
+    command: ["server", "/data", "--console-address", ":9001"]
+
+  mc:
+    depends_on:
+      - storage
+      - catalog
+    image: minio/mc
+    container_name: mc
+    networks:
+      data-lake-network:
+        aliases:
+          - minio.storage
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add minio http://storage:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc mb -p minio/raw-zone;
+      /usr/bin/mc policy set public minio/raw-zone;
+      /usr/bin/mc rm -r --force minio/warehouse;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc mb minio/iceberg;
+      /usr/bin/mc mb minio/checkpoints;
+      /usr/bin/mc policy set public minio/checkpoints;
+      /usr/bin/mc policy set public minio/warehouse;
+      /usr/bin/mc policy set public minio/iceberg;
+      tail -f /dev/null
+      "
+
+  spark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spark-master
+    ports:
+      - 7077:7077
+      - 8081:8081
+    networks:
+      - data-lake-network
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: us-east-1
+      SPARK_MODE: master
+    volumes:
+      - ./spark-jobs:/app
+    command: /opt/bitnami/scripts/spark/run.sh
+
+  x-airflow-common:
+    &airflow-common
+    build:
+      context: ./airflow
+      dockerfile: airflow.dockerfile
+    env_file: .env
+    environment:
+      &airflow-env
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: ${AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION}
+      AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - "./airflow/dags:/opt/airflow/dags"
+      - "./airflow/logs:/opt/airflow/logs"
+      - "./airflow/plugins:/opt/airflow/plugins"
+      - "./airflow/entrypoint.sh:/opt/airflow/entrypoint.sh"
+      - "./spark-jobs:/app"
+    user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}"
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:13
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  airflow-webserver:
+    <<: *airflow-common
+    entrypoint: /opt/airflow/entrypoint.sh
+    ports:
+      - "8082:8080"
+
+  airflow-scheduler:
+      <<: *airflow-common
+      command: scheduler
+
+  airflow-triggerer:
+      <<: *airflow-common
+      command: triggerer
+
+
+volumes:
+  postgres_data:
+
+networks:
+  data-lake-network:
+
+
+
+
+
+

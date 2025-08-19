@@ -1,0 +1,22 @@
+
+---
+
+### **.gitignore**
+
+```gitignore
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env
+
+# Docker
+*.log
+
+# Airflow logs
+airflow/logs/
+
+# Sistema
+.DS_Store
