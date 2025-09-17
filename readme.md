@@ -31,8 +31,11 @@ Rodar o comando via PowerShell: "docker-compose up build -d"
 
 URL das aplicações:
 Airflow Webserver: http://localhost:8080
+
 MinIO Console: http://localhost:9000
+
 Trino: http://localhost:8081
+
 Spark UI: http://localhost:4040
 
 Disclaimer
